@@ -725,16 +725,24 @@ class DockerManager(object):
         return False
 
     def get_inspect_image(self):
+        try:
+            return self.client.inspect_image(self.module.params.get('image'))
+        except DockerAPIError as e:
+            if e.response.status_code == 404:
+                return None
+            else:
+                raise e
+
+    def get_image_repo_tags(self):
         image, tag = get_split_image_tag(self.module.params.get('image'))
         if tag is None:
             tag = 'latest'
         resource = '%s:%s' % (image, tag)
 
-        matching_image = None
         for image in self.client.images(name=image):
             if resource in image.get('RepoTags', []):
-                matching_image = image
-        return matching_image
+                return image['RepoTags']
+        return None
 
     def get_inspect_containers(self, containers):
         inspect = []
@@ -796,13 +804,22 @@ class DockerManager(object):
                     continue
 
             # EXPOSED PORTS
-            # Note that ports that are bound at container run are also exposed
-            # implicitly.
-            expected_exposed_ports = set()
+
+            image_exposed_ports = set((image["ContainerConfig"]["ExposedPorts"] or {}).keys())
+
+            expected_exposed_ports = set(image_exposed_ports)
             for p in (self.exposed_ports or []):
                 expected_exposed_ports.add("/".join(p))
 
-            actually_exposed_ports = set((container["Config"]["ExposedPorts"] or {}).keys())
+            if self.port_bindings:
+                for container_port in self.port_bindings.keys():
+                    if isinstance(container_port, int):
+                        container_port = "{}/tcp".format(container_port)
+
+                    expected_exposed_ports.add(container_port)
+
+            container_exposed_ports = set((container["Config"]["ExposedPorts"] or {}).keys())
+            actually_exposed_ports = image_exposed_ports.union(container_exposed_ports)
 
             if actually_exposed_ports != expected_exposed_ports:
                 self.reload_reasons.append('exposed_ports ({} => {})'.format(actually_exposed_ports, expected_exposed_ports))
@@ -810,13 +827,8 @@ class DockerManager(object):
                 continue
 
             # VOLUMES
-            # not including bind modes.
 
-            expected_volume_keys = set()
-            if self.volumes:
-                for key, config in self.volumes.iteritems():
-                    if not config and key not in self.binds:
-                        expected_volume_keys.add(key)
+            expected_volume_keys = set((self.volumes or {}).keys())
             actual_volume_keys = set((container['Config']['Volumes'] or {}).keys())
 
             if actual_volume_keys != expected_volume_keys:
@@ -1032,7 +1044,7 @@ class DockerManager(object):
         # that map to the same Docker image.
         inspected = self.get_inspect_image()
         if inspected:
-            images = inspected.get('RepoTags', [])
+            images = self.get_image_repo_tags()
         else:
             image, tag = get_split_image_tag(self.module.params.get('image'))
             images = [':'.join([image, tag])]
