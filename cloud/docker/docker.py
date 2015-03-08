@@ -811,13 +811,6 @@ class DockerManager(object):
             for p in (self.exposed_ports or []):
                 expected_exposed_ports.add("/".join(p))
 
-            if self.port_bindings:
-                for container_port in self.port_bindings.keys():
-                    if isinstance(container_port, int):
-                        container_port = "{}/tcp".format(container_port)
-
-                    expected_exposed_ports.add(container_port)
-
             container_exposed_ports = set((container["Config"]["ExposedPorts"] or {}).keys())
             actually_exposed_ports = image_exposed_ports.union(container_exposed_ports)
 
